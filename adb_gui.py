@@ -350,6 +350,7 @@ class AdbGui(tk.Tk):
         remote_frame.pack(fill="both", expand=True)
         self.remote_list.bind("<Double-Button-1>", self.on_remote_activate)
         self.remote_list.bind("<Return>", self.on_remote_activate)
+        self.remote_list.bind("<Delete>", lambda _event: self.on_delete_remote())
 
         right_actions = tk.Frame(right, bg="white")
         right_actions.pack(fill="x", pady=(8, 0))
@@ -361,6 +362,10 @@ class AdbGui(tk.Tk):
             right_actions, "刷新目录", self.on_refresh_remote, "#e5e7eb", "#111827"
         )
         self.btn_refresh_remote.pack(side="left", padx=(8, 0))
+        self.btn_delete_remote = self._button(
+            right_actions, "删除", self.on_delete_remote, "#dc2626"
+        )
+        self.btn_delete_remote.pack(side="left", padx=(8, 0))
 
         log_wrap = tk.Frame(self, bg="#eef2f7", padx=12)
         log_wrap.pack(fill="x")
@@ -411,6 +416,7 @@ class AdbGui(tk.Tk):
         self._bind_hint(self.btn_open, "选择要上传的本地文件，可多选")
         self._bind_hint(self.btn_upload, "把左侧文件上传到上方的设备目录，默认 /data")
         self._bind_hint(self.btn_download, "把右侧选中的设备文件下载到电脑")
+        self._bind_hint(self.btn_delete_remote, "删除右侧选中的设备文件或目录，支持多选")
 
         self.action_buttons = [
             self.btn_start,
@@ -424,6 +430,7 @@ class AdbGui(tk.Tk):
             self.btn_download,
             self.btn_enter,
             self.btn_refresh_remote,
+            self.btn_delete_remote,
             *self.quick_buttons,
         ]
 
@@ -877,6 +884,47 @@ class AdbGui(tk.Tk):
         self.remote_path.set(chosen[0]["path"])
         self.on_refresh_remote()
 
+    def on_delete_remote(self) -> None:
+        serial = self.require_serial()
+        if not serial:
+            return
+        chosen = self.selected_remote_entries()
+        if not chosen:
+            messagebox.showwarning("没有选择文件", "请先在右侧选中要删除的文件或目录。", parent=self)
+            return
+        names = [entry["name"] for entry in chosen]
+        if len(names) == 1:
+            prompt = f"确定要删除「{names[0]}」吗？"
+        else:
+            prompt = f"确定要删除以下 {len(names)} 项吗？\n" + "\n".join(names[:10])
+            if len(names) > 10:
+                prompt += f"\n…等共 {len(names)} 项"
+        if not messagebox.askyesno("确认删除", prompt, parent=self, icon="warning"):
+            return
+        items = list(chosen)
+        self.run_job("正在删除…", lambda: self._delete_remote_job(serial, items))
+
+    def _delete_remote_job(self, serial: str, entries: list[dict]) -> str:
+        ok = 0
+        failed = 0
+        for entry in entries:
+            path = entry["path"]
+            cmd = "rm -r" if entry["is_dir"] else "rm"
+            self.post(f"删除 {path}")
+            code, out = self.capture(
+                [self.adb, "-s", serial, "shell", f"{cmd} {shell_quote(path)}"],
+                timeout=40,
+            )
+            if code == 0:
+                ok += 1
+            else:
+                failed += 1
+                self.post(out.strip() or "删除失败")
+        self.post(f"删除结束：成功 {ok} 个，失败 {failed} 个")
+        remote = norm_remote(self.remote_path.get())
+        self._list_remote(serial, remote)
+        return f"删除完成：成功 {ok} 个，失败 {failed} 个"
+
     def on_remote_activate(self, _event=None) -> None:
         chosen = self.selected_remote_entries()
         if len(chosen) != 1:
@@ -965,6 +1013,7 @@ def self_test() -> None:
     assert app.btn_open.cget("text") == "打开"
     assert app.btn_upload.cget("text") == "上传"
     assert app.btn_download.cget("text") == "下载"
+    assert app.btn_delete_remote.cget("text") == "删除"
     assert app.remote_path.get() == "/data"
     code, out = app.capture([app.adb, "version"], timeout=15)
     app.update()
